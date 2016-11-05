@@ -225,7 +225,7 @@ public:
         char str[32] = {0};
         time(&ti);
         ptr = gmtime(&ti);
-        strftime(str, 32, "[%Y/%m/%d %T]", ptr);
+        strftime(str, 32, "[%Y/%m/%d %T] ", ptr);
         return string(str);
     }
 };
@@ -249,99 +249,263 @@ private:
     }
 
 public:
-    LogModule(std::string name, std::string mode = string("w+")) : path(name) {
+    LogModule(std::string name, std::string mode = string("w+")) : path(name), fp(NULL) {
         if(name != "console") {
             if((fp = fopen(name.c_str(), mode.c_str())) == NULL) {
-                fprint(stderr, "in LogModule, initialize failed.\n");
+                fprintf(stderr, "in LogModule, initialize failed.\n");
                 exit(0);
             }
         }
 
         if(mutex.init() != 0) {
-            fprint(stderr, "in LogModule, mutex initialize failed.\n");
+            fprintf(stderr, "in LogModule, mutex initialize failed.\n");
             exit(0);
         }
     }
 
     ~LogModule(){
-        fclose(fp);
+        if(fp){
+            fclose(fp);
+        }
         if(mutex.destroy() != 0) {
-             fprint(stderr, "in LogModule, mutex destroy failed.\n");
+             fprintf(stderr, "in LogModule, mutex destroy failed.\n");
         }
     }
 
     //with timestamp
-	int write(const char * str, ...) {
-		va_list vl;
-		va_start(vl, str);
-		int num = 0;
+    int write(const char * str, ...) {
+        va_list vl;
+        va_start(vl, str);
+        int num = 0;
 
-		if (filePath == "console") {
-			num = ::vfprintf(stdout, str, vl);
-		}
-		else {
-			num = ::vfprintf(fp, str, vl);
-		}
+        std::string out("");
+        out += TimeStamp::create();
+        out += string(str);
 
-		va_end(vl);
-		return num;
-	}
+        mutex.lock();
+        if (path == "console") {
+            num = ::vprintf(out.c_str(), vl);
+        }
+        else {
+            num = ::vfprintf(fp, out.c_str(), vl);
+        }
+        mutex.unlock();
+
+        va_end(vl);
+        return num;
+    }
 
     //no timestamp
-	int print(const char * str, ...) {
-		va_list vl;
-		va_start(vl, str);
+    int print(const char * str, ...) {
+        va_list vl;
+        va_start(vl, str);
+        int num = 0;
 
-		int num = 0;
-		string format("");
-		format += str;
-		format += "\n";
+        mutex.lock();
+        if (path == "console") {
+            num = ::vprintf(str, vl);
+        }
+        else {
+            num = ::vfprintf(fp, str, vl);
+        }
+        mutex.unlock();
 
-		if (filePath == "console") {
-			num = ::vfprintf_s(stdout, format.c_str(), vl);
-		}
-		else {
-			int len = format.size();
-			if (len >= limit) {
-				flush();
-				num = ::vfprintf(pFile, format.c_str(), vl);
-			}
-			else {
-				EnterCriticalSection(&lock);
-				num = ::vsprintf_s(tempBuffer, limit, format.c_str(), vl);
-
-				if (-1 == num) {
-					LeaveCriticalSection(&lock);
-					return -1;
-				}
-
-				if (index + num >= limit) {
-					::fwrite(buffer, index, 1, pFile);
-					index = 0;
-					::fwrite(tempBuffer, num, 1, pFile);
-					::fflush(pFile);
-				}
-				else {
-					if (!memcpy_s(buffer + index, limit - index, tempBuffer, num)) {
-						index += num;
-					}
-					else {
-						LeaveCriticalSection(&lock);
-						return -1;
-					}
-				}
-
-				LeaveCriticalSection(&lock);
-			}
-		}
-
-		va_end(vl);
-		return num;
-	}
+        va_end(vl);
+        return num;
+    }
 
     void flush(void){
-        
+        if(fp){
+            fflush(fp);
+        }
     }
 };
+
+//dispatcher template
+template<typename ArgType>
+class svrutil::EventDispatcher {
+public:
+	const int DEFAULT_MAXTHREAD_NUM = 16;
+	const int DEFAULT_SLEEP_TIME = 100;
+
+	enum Status {RUNNING,SUSPEND,HALT};
+
+	template<typename _ArgType>
+	class Callback {
+	private:
+		void operator=(const Callback& cb) {
+			//...
+		}
+
+		Callback(const Callback & cb) {
+			//....
+		}
+
+	public:
+		Callback() {
+			//...
+		}
+
+		virtual ~Callback() {
+
+		}
+
+		virtual void run(_ArgType * pArg) {
+			
+		}
+	};
+
+private:
+	int maxThreadNum;
+	int sleepTime;
+	Status status;
+
+	std::list<std::pair<pthread_t, void*>> threadList;
+	std::list<std::pair<std::string, ArgType*>> eventList;
+	std::map<std::string, Callback<ArgType>*> callbackMap;
+	svrutil::SRWLock lock;
+
+	static void * workThread(void * pArg) {
+		EventDispatcher * pDispatcher = (EventDispatcher*)pArg;
+		string name;
+		ArgType * pArgType = NULL;
+		std::map<std::string, Callback<ArgType>*>::iterator it;
+		bool runFlag = false;
+
+		while (pDispatcher->status != HALT) {
+			//status
+			if (pDispatcher->status == SUSPEND) {
+				usleep(100000);
+				continue;
+			}
+
+			//get event
+			pDispatcher->lock.AcquireExclusive();
+			if (pDispatcher->eventList.size() > 0) {
+				name = pDispatcher->eventList.front().first;
+				pArgType = pDispatcher->eventList.front().second;
+				pDispatcher->eventList.pop_front();
+			}
+			else {
+				pDispatcher->lock.ReleaseExclusive();
+				usleep(pDispatcher->sleepTime * 1000);
+				continue;
+			}
+			pDispatcher->lock.ReleaseExclusive();
+
+			//process event
+			pDispatcher->lock.AcquireShared();
+			it = pDispatcher->callbackMap.find(name);
+			if (it != pDispatcher->callbackMap.end()) {
+				runFlag = true;
+			}
+			pDispatcher->lock.ReleaseShared();
+
+			if (runFlag) {
+				it->second->run(pArgType);
+				runFlag = false;
+			}
+		}
+
+		return NULL;
+	}
+
+	//not available
+
+	void operator=(const EventDispatcher & ED) {
+		//...
+	}
+
+	EventDispatcher() {
+
+	}
+
+	EventDispatcher(const EventDispatcher & ED) {
+
+	}
+	
+public:
+	EventDispatcher(int max = DEFAULT_MAXTHREAD_NUM) {
+		if (max < 1) {
+			max = 1;
+		}
+
+		maxThreadNum = max;
+		sleepTime = DEFAULT_SLEEP_TIME;
+		status = RUNNING;
+
+		for (int i = 0; i < maxThreadNum; ++i) {
+			pthread_t thread;
+            if(pthread_create(&thread, NULL, workThread, this) == 0){
+			    threadList.push_back(std::pair<HANDLE, void*>(thread, NULL));
+            }
+		}
+
+		Sleep(200);
+	}
+
+	virtual ~EventDispatcher() {
+		status = HALT;
+		std::list<std::pair<pthread_t, void*>>::iterator it = threadList.begin();
+		while (it != threadList.end()) {
+			void * pret = NULL;
+            pthread_join(it->first, &pret);
+			++it;
+		}
+		usleep(200000);
+	}
+
+	bool addCallback(const std::string & name, Callback<ArgType> * pCallback) {
+		if (name.size() == 0 || pCallback == NULL) {
+			return false;
+		}
+
+		lock.AcquireExclusive();
+		std::map<std::string, Callback<ArgType>*>::iterator it = callbackMap.find(name);
+		if (it == callbackMap.end()) {
+			callbackMap.insert(std::pair<string, Callback<ArgType>*>(name, pCallback));
+		}
+		lock.ReleaseExclusive();
+
+		return true;
+	}
+
+	bool removeCallback(const std::string & name) {
+		if (name.size() == 0) {
+			return false;
+		}
+
+		lock.AcquireExclusive();
+		std::map<std::string, Callback<ArgType>*>::iterator it = callbackMap.find(name);
+		if (it != callbackMap.end()) {
+			callbackMap.erase(it);
+		}
+		lock.ReleaseExclusive();
+
+		return true;
+	}
+
+	bool submitEvent(const std::string & name,ArgType * pArg) {
+		lock.AcquireExclusive();
+		std::map<std::string, Callback<ArgType>*>::iterator it = callbackMap.find(name);
+		if (it != callbackMap.end()) {
+			eventList.push_back(std::pair<std::string, ArgType*>(name, pArg));
+		}
+		lock.ReleaseExclusive();
+		return true;
+	}
+
+	bool setStatus(Status st) {
+		if (st == RUNNING || st == SUSPEND) {
+			status = st;
+			return true;
+		}
+		else {
+			return false;
+		}
+	}
+
+};
+
 
 #endif // SVRUTIL_H

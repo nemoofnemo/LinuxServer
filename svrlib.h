@@ -17,7 +17,7 @@
 #include <regex>
 #include <pthread.h>
 #include <sys/time.h>
-
+#include <stdarg.h>
 
 //class Object should be base class of every other class.
 class Object {
