@@ -325,185 +325,196 @@ public:
 template<typename ArgType>
 class svrutil::EventDispatcher {
 public:
-	const int DEFAULT_MAXTHREAD_NUM = 16;
-	const int DEFAULT_SLEEP_TIME = 100;
+    const static int DEFAULT_MAXTHREAD_NUM = 16;
+    const static int DEFAULT_SLEEP_TIME = 100;
 
-	enum Status {RUNNING,SUSPEND,HALT};
+    enum Status {RUNNING,SUSPEND,HALT};
 
-	template<typename _ArgType>
-	class Callback {
-	private:
-		void operator=(const Callback& cb) {
-			//...
-		}
+    template<typename _ArgType>
+    class Callback {
+    private:
+        void operator=(const Callback& cb) {
+            //...
+        }
 
-		Callback(const Callback & cb) {
-			//....
-		}
+        Callback(const Callback & cb) {
+            //....
+        }
 
-	public:
-		Callback() {
-			//...
-		}
+    public:
+        Callback() {
+            //...
+        }
 
-		virtual ~Callback() {
+        virtual ~Callback() {
 
-		}
+        }
 
-		virtual void run(_ArgType * pArg) {
-			
-		}
-	};
+        virtual void run(_ArgType * pArg) {
+
+        }
+    };
 
 private:
-	int maxThreadNum;
-	int sleepTime;
-	Status status;
+    int maxThreadNum;
+    int sleepTime;
+    Status status;
 
-	std::list<std::pair<pthread_t, void*>> threadList;
-	std::list<std::pair<std::string, ArgType*>> eventList;
-	std::map<std::string, Callback<ArgType>*> callbackMap;
-	svrutil::SRWLock lock;
+    std::list<std::pair<pthread_t, void*>> threadList;
+    std::list<std::pair<std::string, ArgType*>> eventList;
+    std::map<std::string, Callback<ArgType>*> callbackMap;
+    svrutil::SRWLock lock;
 
-	static void * workThread(void * pArg) {
-		EventDispatcher * pDispatcher = (EventDispatcher*)pArg;
-		string name;
-		ArgType * pArgType = NULL;
-		std::map<std::string, Callback<ArgType>*>::iterator it;
-		bool runFlag = false;
+    static void * workThread(void * pArg) {
+        EventDispatcher * pDispatcher = (EventDispatcher*)pArg;
+        string name;
+        ArgType * pArgType = NULL;
+        typename std::map<std::string, Callback<ArgType>*>::iterator it;
+        bool runFlag = false;
 
-		while (pDispatcher->status != HALT) {
-			//status
-			if (pDispatcher->status == SUSPEND) {
-				usleep(100000);
-				continue;
-			}
-
-			//get event
-			pDispatcher->lock.AcquireExclusive();
-			if (pDispatcher->eventList.size() > 0) {
-				name = pDispatcher->eventList.front().first;
-				pArgType = pDispatcher->eventList.front().second;
-				pDispatcher->eventList.pop_front();
-			}
-			else {
-				pDispatcher->lock.ReleaseExclusive();
-				usleep(pDispatcher->sleepTime * 1000);
-				continue;
-			}
-			pDispatcher->lock.ReleaseExclusive();
-
-			//process event
-			pDispatcher->lock.AcquireShared();
-			it = pDispatcher->callbackMap.find(name);
-			if (it != pDispatcher->callbackMap.end()) {
-				runFlag = true;
-			}
-			pDispatcher->lock.ReleaseShared();
-
-			if (runFlag) {
-				it->second->run(pArgType);
-				runFlag = false;
-			}
-		}
-
-		return NULL;
-	}
-
-	//not available
-
-	void operator=(const EventDispatcher & ED) {
-		//...
-	}
-
-	EventDispatcher() {
-
-	}
-
-	EventDispatcher(const EventDispatcher & ED) {
-
-	}
-	
-public:
-	EventDispatcher(int max = DEFAULT_MAXTHREAD_NUM) {
-		if (max < 1) {
-			max = 1;
-		}
-
-		maxThreadNum = max;
-		sleepTime = DEFAULT_SLEEP_TIME;
-		status = RUNNING;
-
-		for (int i = 0; i < maxThreadNum; ++i) {
-			pthread_t thread;
-            if(pthread_create(&thread, NULL, workThread, this) == 0){
-			    threadList.push_back(std::pair<HANDLE, void*>(thread, NULL));
+        while (pDispatcher->status != HALT) {
+            //status
+            if (pDispatcher->status == SUSPEND) {
+                usleep(100000);
+                continue;
             }
-		}
 
-		Sleep(200);
-	}
+            //get event
+            pDispatcher->lock.AcquireExclusive();
+            if (pDispatcher->eventList.size() > 0) {
+                name = pDispatcher->eventList.front().first;
+                pArgType = pDispatcher->eventList.front().second;
+                pDispatcher->eventList.pop_front();
+            }
+            else {
+                pDispatcher->lock.ReleaseExclusive();
+                usleep(pDispatcher->sleepTime * 1000);
+                continue;
+            }
+            pDispatcher->lock.ReleaseExclusive();
 
-	virtual ~EventDispatcher() {
-		status = HALT;
-		std::list<std::pair<pthread_t, void*>>::iterator it = threadList.begin();
-		while (it != threadList.end()) {
-			void * pret = NULL;
+            //process event
+            pDispatcher->lock.AcquireShared();
+            it = pDispatcher->callbackMap.find(name);
+            if (it != pDispatcher->callbackMap.end()) {
+                runFlag = true;
+            }
+            pDispatcher->lock.ReleaseShared();
+
+            if (runFlag) {
+                it->second->run(pArgType);
+                runFlag = false;
+            }
+        }
+
+        return NULL;
+    }
+
+    //not available
+
+    void operator=(const EventDispatcher & ED) {
+        //...
+    }
+
+    EventDispatcher(const EventDispatcher & ED) {
+
+    }
+
+public:
+    EventDispatcher() {
+        maxThreadNum = DEFAULT_MAXTHREAD_NUM;
+        sleepTime = DEFAULT_SLEEP_TIME;
+        status = RUNNING;
+
+        for (int i = 0; i < maxThreadNum; ++i) {
+            pthread_t thread;
+            if(pthread_create(&thread, NULL, workThread, this) == 0){
+                threadList.push_back(std::pair<pthread_t, void*>(thread, NULL));
+            }
+        }
+
+        usleep(200000);
+    }
+
+    EventDispatcher(int max) {
+        if (max < 1) {
+            max = 1;
+        }
+
+        maxThreadNum = max;
+        sleepTime = DEFAULT_SLEEP_TIME;
+        status = RUNNING;
+
+        for (int i = 0; i < maxThreadNum; ++i) {
+            pthread_t thread;
+            if(pthread_create(&thread, NULL, workThread, this) == 0){
+                threadList.push_back(std::pair<pthread_t, void*>(thread, NULL));
+            }
+        }
+
+        usleep(200000);
+    }
+
+    virtual ~EventDispatcher() {
+        status = HALT;
+        typename std::list<std::pair<pthread_t, void*>>::iterator it = threadList.begin();
+        while (it != threadList.end()) {
+            void * pret = NULL;
             pthread_join(it->first, &pret);
-			++it;
-		}
-		usleep(200000);
-	}
+            ++it;
+        }
+        usleep(200000);
+    }
 
-	bool addCallback(const std::string & name, Callback<ArgType> * pCallback) {
-		if (name.size() == 0 || pCallback == NULL) {
-			return false;
-		}
+    bool addCallback(const std::string & name, Callback<ArgType> * pCallback) {
+        if (name.size() == 0 || pCallback == NULL) {
+            return false;
+        }
 
-		lock.AcquireExclusive();
-		std::map<std::string, Callback<ArgType>*>::iterator it = callbackMap.find(name);
-		if (it == callbackMap.end()) {
-			callbackMap.insert(std::pair<string, Callback<ArgType>*>(name, pCallback));
-		}
-		lock.ReleaseExclusive();
+        lock.AcquireExclusive();
+        typename std::map<std::string, Callback<ArgType>*>::iterator it = callbackMap.find(name);
+        if (it == callbackMap.end()) {
+            callbackMap.insert(std::pair<string, Callback<ArgType>*>(name, pCallback));
+        }
+        lock.ReleaseExclusive();
 
-		return true;
-	}
+        return true;
+    }
 
-	bool removeCallback(const std::string & name) {
-		if (name.size() == 0) {
-			return false;
-		}
+    bool removeCallback(const std::string & name) {
+        if (name.size() == 0) {
+            return false;
+        }
 
-		lock.AcquireExclusive();
-		std::map<std::string, Callback<ArgType>*>::iterator it = callbackMap.find(name);
-		if (it != callbackMap.end()) {
-			callbackMap.erase(it);
-		}
-		lock.ReleaseExclusive();
+        lock.AcquireExclusive();
+        typename std::map<std::string, Callback<ArgType>*>::iterator it = callbackMap.find(name);
+        if (it != callbackMap.end()) {
+            callbackMap.erase(it);
+        }
+        lock.ReleaseExclusive();
 
-		return true;
-	}
+        return true;
+    }
 
-	bool submitEvent(const std::string & name,ArgType * pArg) {
-		lock.AcquireExclusive();
-		std::map<std::string, Callback<ArgType>*>::iterator it = callbackMap.find(name);
-		if (it != callbackMap.end()) {
-			eventList.push_back(std::pair<std::string, ArgType*>(name, pArg));
-		}
-		lock.ReleaseExclusive();
-		return true;
-	}
+    bool submitEvent(const std::string & name,ArgType * pArg) {
+        lock.AcquireExclusive();
+        typename std::map<std::string, Callback<ArgType>*>::iterator it = callbackMap.find(name);
+        if (it != callbackMap.end()) {
+            eventList.push_back(std::pair<std::string, ArgType*>(name, pArg));
+        }
+        lock.ReleaseExclusive();
+        return true;
+    }
 
-	bool setStatus(Status st) {
-		if (st == RUNNING || st == SUSPEND) {
-			status = st;
-			return true;
-		}
-		else {
-			return false;
-		}
-	}
+    bool setStatus(Status st) {
+        if (st == RUNNING || st == SUSPEND) {
+            status = st;
+            return true;
+        }
+        else {
+            return false;
+        }
+    }
 
 };
 
