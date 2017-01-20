@@ -9,6 +9,7 @@ namespace svrutil {
     class RandomString;
     class Mutex;
     class LogModule;
+    class EpollModule;
 
     template<typename type>
     class EventDispatcher;
@@ -516,6 +517,155 @@ public:
         }
     }
 
+};
+/*
+#define MAX_EVENTS 10
+struct epoll_event ev, events[MAX_EVENTS];
+int listen_sock, conn_sock, nfds, epollfd;
+
+//Set up listening socket, 'listen_sock' (socket(),
+//   bind(), listen()) 
+
+epollfd = epoll_create(10);
+if (epollfd == -1) {
+    perror("epoll_create");
+    exit(EXIT_FAILURE);
+}
+
+ev.events = EPOLLIN;
+ev.data.fd = listen_sock;
+if (epoll_ctl(epollfd, EPOLL_CTL_ADD, listen_sock, &ev) == -1) {
+    perror("epoll_ctl: listen_sock");
+    exit(EXIT_FAILURE);
+}
+
+for (;;) {
+    nfds = epoll_wait(epollfd, events, MAX_EVENTS, -1);
+    if (nfds == -1) {
+        perror("epoll_pwait");
+        exit(EXIT_FAILURE);
+    }
+
+    for (n = 0; n < nfds; ++n) {
+        if (events[n].data.fd == listen_sock) {
+            conn_sock = accept(listen_sock,
+                            (struct sockaddr *) &local, &addrlen);
+            if (conn_sock == -1) {
+                perror("accept");
+                exit(EXIT_FAILURE);
+            }
+            setnonblocking(conn_sock);
+            ev.events = EPOLLIN | EPOLLET;
+            ev.data.fd = conn_sock;
+            if (epoll_ctl(epollfd, EPOLL_CTL_ADD, conn_sock,
+                        &ev) == -1) {
+                perror("epoll_ctl: conn_sock");
+                exit(EXIT_FAILURE);
+            }
+        } else {
+            do_use_fd(events[n].data.fd);
+        }
+    }
+}
+*/
+
+class svrutil::EpollModule {
+private:
+    int listenSocketFD;
+    struct sockaddr_in serverAddr;
+    int port;
+    int backlog;
+    int maxEventNum;
+    struct epoll_event ev;
+    struct epoll_event * events;
+    int epollFD;
+
+    int setnonblocking(int sockfd){
+        if (fcntl(sockfd, F_SETFL, fcntl(sockfd, F_GETFD, 0)|O_NONBLOCK) == -1) {
+            return -1;
+        }
+        return 0;
+    }
+
+public:
+    EpollModule(){
+        port = 6001;
+        backlog = 200;
+        maxEventNum = 200;
+        events = new epoll_event[maxEventNum];
+    }
+
+    bool init(){
+        if((listenSocketFD = socket(AF_INET, SOCK_STREAM, 0)) == -1){
+            return false;
+        }
+
+        memset(&serverAddr, 0, sizeof(sockaddr_in));
+        serverAddr.sin_family=AF_INET;  
+        serverAddr.sin_addr.s_addr=htonl(INADDR_ANY);  
+        serverAddr.sin_port=htons(port);  
+
+        if(bind(listenSocketFD, (sockaddr*)&serverAddr, sizeof(serverAddr)) == -1){
+            goto init_exit;
+        }
+
+        if(listen(listenSocketFD, backlog) == -1){
+            goto init_exit;
+        }
+
+        if((epollFD = epoll_create(maxEventNum)) == -1){
+            goto init_exit;
+        }
+
+        ev.events = EPOLLIN;
+        ev.data.fd = listenSocketFD;
+        if(epoll_ctl(epollFD, EPOLL_CTL_ADD, listenSocketFD, &ev) == -1){
+            goto init_exit;
+        }
+
+
+        return true;
+
+        init_exit:
+        close(listenSocketFD);
+        return false;
+    }
+
+    int run(void){
+        int ret;
+        int connSock;
+        socklen_t addrlen;
+        for(;;){
+            ret = epoll_wait(this->epollFD, events, maxEventNum, -1);
+            if(ret == -1){
+                //todo
+                break;
+            }
+
+            for (int n = 0; n < maxEventNum; ++n) {
+                if (events[n].data.fd == listenSocketFD) {
+                    struct sockaddr_in local;
+                    connSock = accept(listenSocketFD,(struct sockaddr *) &local, &addrlen);
+                    puts("accept connection");
+                    if (connSock == -1) {
+                        perror("accept error");
+                        exit(EXIT_FAILURE);
+                    }
+                    setnonblocking(connSock);
+                    ev.events = EPOLLIN | EPOLLET;
+                    ev.data.fd = connSock;
+                    if (epoll_ctl(this->epollFD, EPOLL_CTL_ADD, connSock,&ev) == -1) {
+                        perror("epoll_ctl: conn_sock");
+                        exit(EXIT_FAILURE);
+                    }
+                } else {
+                    //do_use_fd(events[n].data.fd);
+                    puts("aaaa");
+                }
+            }
+        }
+        return ret;
+    }
 };
 
 
